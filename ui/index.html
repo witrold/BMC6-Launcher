@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BMC6 Launcher</title>
+<style>
+  :root {
+    --bg: #0a0c10; --surface: #11141a; --surface2: #171b23; --line: #232933; --line2: #2e3541;
+    --text: #e8eaee; --muted: #8a92a0; --faint: #5a6270;
+    --accent: #5b8cff; --green: #3ddc84; --red: #ff5d5d; --amber: #ffb84d;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f3f5f8; --surface: #fff; --surface2: #f6f8fb; --line: #e3e7ee; --line2: #d3d9e3; --text: #161a22; --muted: #5d6675; --faint: #8b94a3;
+            --accent: #3568f0; --green: #17a354; --red: #e03a3a; --amber: #c9780a; }
+  }
+  * { box-sizing: border-box; }
+  html { color-scheme: dark light; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 22px 20px 40px; display: grid; gap: 18px; }
+  header { display: flex; align-items: center; gap: 12px; }
+  .logo { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; color: #fff; background: linear-gradient(135deg, #5b8cff, #8a5bff); box-shadow: 0 6px 18px rgba(91, 140, 255, .3); }
+  h1 { font-size: 19px; margin: 0; letter-spacing: -.01em; } header small { color: var(--muted); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 20px; }
+  .hero { display: grid; gap: 16px; background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 14%, var(--surface)), var(--surface) 60%); }
+  .hero h2 { margin: 0; font-size: 26px; letter-spacing: -.02em; }
+  .tags { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+  .tag { font-size: 12px; font-weight: 600; padding: 3px 11px; border-radius: 99px; background: var(--surface2); border: 1px solid var(--line2); color: var(--muted); }
+  .acts { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  button { font: inherit; color: var(--text); background: var(--surface2); border: 1px solid var(--line2); border-radius: 12px; padding: 10px 20px; cursor: pointer; font-weight: 600; transition: filter .15s, transform .05s; }
+  button:hover:not(:disabled) { filter: brightness(1.15); } button:active:not(:disabled) { transform: translateY(1px); } button:disabled { opacity: .4; cursor: default; }
+  .play { font-size: 18px; padding: 14px 42px; border: 0; border-radius: 14px; color: #04170c; background: linear-gradient(135deg, #2fcf78, #1fa65e); box-shadow: 0 8px 24px rgba(47, 207, 120, .25); }
+  .install { background: linear-gradient(135deg, #5b8cff, #3568f0); color: #fff; border: 0; }
+  .danger { color: var(--red); background: transparent; }
+  .prog { display: none; gap: 6px; }
+  .prog.on { display: grid; }
+  .bar { height: 9px; border-radius: 9px; background: var(--surface2); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #5b8cff, #8a5bff); transition: width .3s; border-radius: 9px; }
+  .prog .t { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; }
+  .err { color: var(--red); font-size: 13px; display: none; } .err.on { display: block; }
+  .cols { display: grid; grid-template-columns: 300px 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
+  h3 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  label { display: block; margin-bottom: 14px; font-weight: 600; font-size: 13px; }
+  label small { display: block; color: var(--faint); font-weight: 400; }
+  input[type=text], input[type=number] { width: 100%; margin-top: 6px; background: var(--surface2); border: 1px solid var(--line2); border-radius: 10px; color: var(--text); font: inherit; padding: 9px 12px; outline: 0; }
+  input:focus { border-color: var(--accent); }
+  #log { height: 260px; overflow-y: auto; background: color-mix(in srgb, var(--bg) 70%, #000); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font: 12px/1.5 "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; word-break: break-all; color: #c9ced8; }
+  @media (prefers-color-scheme: light) { #log { background: #0f1218; } }
+  #log .g { color: #8a92a0; } #log .e { color: #ff6b6b; } #log .t { color: #5b8cff; font-weight: 700; }
+  #toast { position: fixed; bottom: 22px; left: 50%; transform: translate(-50%, 20px); background: var(--surface2); border: 1px solid var(--line2); padding: 10px 18px; border-radius: 12px; opacity: 0; transition: .25s; pointer-events: none; }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); } #toast.err { border-color: var(--red); color: var(--red); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
+    <div><h1>BMC6 Launcher</h1><small>Lance le modpack en un clic</small></div>
+  </header>
+
+  <section class="card hero">
+    <div>
+      <h2 id="packName">Better MC [BMC6]</h2>
+      <div class="tags"><span class="tag" id="tMc">Minecraft</span><span class="tag" id="tNf">NeoForge</span><span class="tag" id="tVer" style="display:none"></span><span class="tag" id="tSt">Non installé</span></div>
+    </div>
+    <div class="prog" id="prog">
+      <div class="t"><span id="progTask">…</span><span id="progPct"></span></div>
+      <div class="bar"><i id="progBar"></i></div>
+    </div>
+    <div class="err" id="err"></div>
+    <div class="acts">
+      <button class="play" id="bPlay">Jouer</button>
+      <button class="install" id="bInstall">Installer</button>
+      <button class="danger" id="bKill" style="display:none">Fermer le jeu</button>
+    </div>
+  </section>
+
+  <div class="cols">
+    <section class="card">
+      <h3>Compte</h3>
+      <div id="msBox" style="display:none;margin-bottom:18px">
+        <div id="accName" style="font-weight:700;font-size:16px;margin-bottom:8px"></div>
+        <div id="loginCode" style="display:none;margin-bottom:10px">
+          <small style="color:var(--muted)">Ouvre le lien et entre ce code :</small>
+          <div id="codeVal" style="font:700 26px 'Cascadia Mono',Consolas,monospace;letter-spacing:.12em;margin:4px 0"></div>
+          <a id="codeLink" href="#" target="_blank" rel="noopener" style="color:var(--accent)"></a>
+        </div>
+        <div class="err" id="loginErr"></div>
+        <button id="bLogin">Se connecter avec Microsoft</button>
+        <button id="bLogout" class="danger" style="display:none">Se déconnecter</button>
+      </div>
+      <h3 style="margin-top:6px">Réglages</h3>
+      <label>Mémoire (Mo)<small>8192 = 8 Go ; garde de la place pour Windows</small><input type="number" id="ramMb" min="2048" max="32768" step="512"></label>
+      <label id="joinRow" style="display:none"><span style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="autoJoin"> Rejoindre le serveur au lancement</span><small id="joinHint"></small></label>
+      <button id="bSave">Enregistrer</button>
+    </section>
+    <section class="card">
+      <h3>Journal</h3>
+      <div id="log"></div>
+    </section>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const T = "__TOKEN__";
+const $ = id => document.getElementById(id);
+let next = 0, formLoaded = false, follow = true;
+
+async function api(path, body) {
+  const r = await fetch(path, { method: body === undefined ? "GET" : "POST", headers: { "X-Token": T }, body });
+  return r.json();
+}
+function toast(msg, err) { const t = $("toast"); t.textContent = msg; t.className = "show" + (err ? " err" : ""); clearTimeout(toast.h); toast.h = setTimeout(() => t.className = "", 3500); }
+async function act(path, body) { const r = await api(path, body === undefined ? "" : body); if (!r.ok) toast(r.msg, true); poll(); return r.ok; }
+
+function addLines(lines) {
+  const c = $("log"), stick = c.scrollHeight - c.scrollTop - c.clientHeight < 40;
+  for (const l of lines) {
+    const d = document.createElement("div");
+    if (l.startsWith("> ")) d.className = "t"; else if (l.startsWith("ERREUR")) d.className = "e"; else if (l.startsWith("[jeu]")) d.className = "g";
+    d.textContent = l; c.appendChild(d);
+  }
+  while (c.childElementCount > 1500) c.removeChild(c.firstChild);
+  if (stick) c.scrollTop = c.scrollHeight;
+}
+
+async function poll() {
+  let s; try { s = await api("/api/state?since=" + next); } catch (e) { return; }
+  next = s.next;
+  $("packName").textContent = s.pack.name;
+  $("tMc").textContent = "Minecraft " + s.pack.minecraft; $("tNf").textContent = "NeoForge " + s.pack.neoforge;
+  $("tSt").textContent = s.phase === "playing" ? "En jeu" : s.phase === "installing" ? "Installation…" : !s.installed ? "Non installé" : s.updateAvailable ? "Mise à jour disponible" : "À jour";
+  $("tVer").style.display = s.pack.version ? "" : "none"; $("tVer").textContent = "Pack " + s.pack.version;
+  const busy = s.phase !== "idle";
+  $("bPlay").disabled = busy || !s.installed; $("bInstall").disabled = busy;
+  $("bInstall").textContent = !s.installed ? "Installer" : s.updateAvailable ? "Mettre à jour" : "Réparer";
+  $("bKill").style.display = s.phase === "playing" ? "" : "none";
+  $("prog").classList.toggle("on", s.phase === "installing");
+  if (s.phase === "installing") {
+    $("progTask").textContent = s.task;
+    const pct = s.total ? Math.min(100, s.done / s.total * 100) : 0;
+    $("progPct").textContent = s.total ? s.done + " / " + s.total : "";
+    $("progBar").style.width = (s.total ? pct : 4) + "%";
+  }
+  $("err").textContent = s.error; $("err").classList.toggle("on", !!s.error);
+  $("joinRow").style.display = s.pack.server ? "" : "none"; $("joinHint").textContent = s.pack.server;
+  $("msBox").style.display = "";
+  $("accName").textContent = s.account ? "Connecté : " + s.account : "Non connecté";
+  $("bLogout").style.display = s.account ? "" : "none";
+  const lg = s.login, waiting = lg && lg.status === "waiting";
+  $("bLogin").style.display = s.account && !waiting ? "none" : ""; $("bLogin").disabled = waiting;
+  $("loginCode").style.display = waiting ? "" : "none";
+  if (waiting) { $("codeVal").textContent = lg.code; $("codeLink").href = lg.uri; $("codeLink").textContent = lg.uri; }
+  $("loginErr").textContent = lg && lg.status === "error" ? lg.msg : ""; $("loginErr").classList.toggle("on", !!(lg && lg.status === "error"));
+  $("bPlay").disabled = busy || !s.installed || !s.account;
+  $("bLogin").disabled = waiting || !s.msConfigured;
+  if (!formLoaded) { formLoaded = true; $("ramMb").value = s.config.ramMb; $("autoJoin").checked = s.config.autoJoin; }
+  if (s.lines.length) addLines(s.lines);
+}
+
+$("bInstall").onclick = () => act("/api/install");
+$("bPlay").onclick = () => act("/api/play");
+$("bKill").onclick = () => act("/api/kill");
+$("bLogin").onclick = () => act("/api/login");
+$("bLogout").onclick = () => act("/api/logout");
+$("bSave").onclick = async () => {
+  const body = new URLSearchParams({ ramMb: $("ramMb").value, autoJoin: $("autoJoin").checked }).toString();
+  if (await act("/api/config", body)) toast("Réglages enregistrés");
+};
+poll(); setInterval(poll, 800);
+</script>
+</body>
+</html>
