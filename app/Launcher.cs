@@ -48,13 +48,15 @@ static class Theme
 class RoundButton : Control
 {
     public Color Fill = Theme.Card2;
+    public Color GradientTo = Color.Empty; // si renseignee : degrade horizontal de Fill vers cette couleur
     public Color TextColor = Theme.Text;
     public bool Outline;
     bool hover;
 
     public RoundButton()
     {
-        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+        BackColor = Color.Transparent; // le fond (carte ou accueil degrade) est repeint par le parent : pas de coins carres
         Cursor = Cursors.Hand;
         Font = new Font("Segoe UI Semibold", 10.5f);
         Height = 40;
@@ -69,16 +71,19 @@ class RoundButton : Control
     {
         Graphics g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.Clear(Parent != null ? Parent.BackColor : Theme.Card);
         Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
-        Color fill = Fill;
-        if (Enabled && hover) fill = ControlPaint.Light(fill, 0.18f);
-        if (!Enabled) fill = Theme.Card2;
-        using (GraphicsPath p = Theme.Round(r, 12))
+        Color fill = Fill, to = GradientTo;
+        if (Enabled && hover) { fill = ControlPaint.Light(fill, 0.18f); if (to != Color.Empty) to = ControlPaint.Light(to, 0.18f); }
+        if (!Enabled) { fill = Theme.Card2; to = Color.Empty; }
+        using (GraphicsPath p = Theme.Round(r, 14))
         {
             if (Outline)
             {
                 using (Pen pen = new Pen(Enabled ? Color.FromArgb(hover ? 255 : 160, TextColor) : Theme.Line, 1.5f)) g.DrawPath(pen, p);
+            }
+            else if (to != Color.Empty)
+            {
+                using (LinearGradientBrush b = new LinearGradientBrush(r, fill, to, LinearGradientMode.Horizontal)) g.FillPath(b, p);
             }
             else
             {
@@ -113,6 +118,57 @@ class Card : Panel
     }
 }
 
+/// <summary>
+/// Grande carte d'accueil peinte : degrade bleu nuit, lueur en haut a droite et mosaique de "pixels" qui evoque un monde de blocs.
+/// Les controles poses dessus sont transparents et laissent voir ce fond.
+/// </summary>
+class HeroCard : Panel
+{
+    public HeroCard()
+    {
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        BackColor = Theme.Card;
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        Graphics g = e.Graphics;
+        g.Clear(Theme.Bg);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
+        if (r.Width < 40 || r.Height < 40) return;
+        using (GraphicsPath p = Theme.Round(r, 20))
+        {
+            using (LinearGradientBrush b = new LinearGradientBrush(r, Color.FromArgb(26, 21, 62), Color.FromArgb(11, 14, 26), 65f)) g.FillPath(b, p);
+            g.SetClip(p);
+            using (GraphicsPath glow = new GraphicsPath())
+            {
+                glow.AddEllipse(Width * 0.40f, -Height * 0.45f, Width * 0.95f, Height * 1.2f);
+                using (PathGradientBrush pb = new PathGradientBrush(glow))
+                {
+                    pb.CenterColor = Color.FromArgb(85, 91, 140, 255);
+                    pb.SurroundColors = new Color[] { Color.FromArgb(0, 91, 140, 255) };
+                    g.FillPath(pb, glow);
+                }
+            }
+            // mosaique : de plus en plus dense vers le haut a droite, toujours la meme (graine fixe)
+            Random rnd = new Random(6);
+            int s = 30;
+            for (int y = 0; y * s < Height; y++)
+                for (int x = 0; x * s < Width; x++)
+                {
+                    double fx = (double)(x * s) / Width, fy = (double)(y * s) / Height;
+                    double chance = Math.Max(0, fx - 0.30) * Math.Max(0, 1.05 - fy * 1.1);
+                    if (rnd.NextDouble() < chance * 0.9)
+                        using (SolidBrush sb = new SolidBrush(Color.FromArgb(7 + rnd.Next(20), rnd.Next(2) == 0 ? 138 : 91, rnd.Next(2) == 0 ? 91 : 140, 255)))
+                            g.FillRectangle(sb, x * s + 1, y * s + 1, s - 2, s - 2);
+                }
+            g.ResetClip();
+            using (Pen pen = new Pen(Color.FromArgb(48, 56, 78))) g.DrawPath(pen, p);
+        }
+    }
+}
+
 /// <summary>Barre de progression degradee.</summary>
 class FlatBar : Control
 {
@@ -121,7 +177,8 @@ class FlatBar : Control
 
     public FlatBar()
     {
-        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+        BackColor = Color.Transparent;
         Height = 10;
     }
 
@@ -129,10 +186,9 @@ class FlatBar : Control
     {
         Graphics g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.Clear(Parent != null ? Parent.BackColor : Theme.Card);
         Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
         using (GraphicsPath p = Theme.Round(r, Height / 2))
-        using (SolidBrush b = new SolidBrush(Theme.Card2)) g.FillPath(b, p);
+        using (SolidBrush b = new SolidBrush(Color.FromArgb(150, 12, 14, 20))) g.FillPath(b, p);
         int w = (int)((Width - 1) * val);
         if (w > Height)
         {
@@ -301,7 +357,7 @@ class MainForm : Form
     readonly System.Windows.Forms.Timer saveTimer = new System.Windows.Forms.Timer();
     readonly NotifyIcon tray = new NotifyIcon();
 
-    Label lblSrv, lblPack, lblMc, lblNf, lblState, lblVer, lblProg, lblErr, lblAccount, lblAccSub, lblCodeHelp, lblCode, lblJoinHint, lblJoin, lblLoginErr;
+    Label lblSub, lblHint, lblEmpty, lblSrv, lblPack, lblMc, lblNf, lblState, lblVer, lblProg, lblErr, lblAccount, lblAccSub, lblCodeHelp, lblCode, lblJoinHint, lblJoin, lblLoginErr;
     Label lblRamValue, lblRamSub, lblRamNote, lblHdrVer;
     AvatarBox avatar;
     FlatBar bar;
@@ -311,6 +367,11 @@ class MainForm : Form
     Toggle tglJoin;
     RichTextBox logBox;
 
+    Card journalCard;
+    Control journalGap;
+    RoundButton btnLogToggle;
+    bool logShown, logAutoOpened;
+    string lastErr = "";
     int next, totalRamMb = 16384, recommendedMb = 8192;
     // vitesse de telechargement et temps restant pendant l'installation
     double lastBytes, speed, taskStartDone;
@@ -417,8 +478,8 @@ class MainForm : Form
         BackColor = Theme.Bg;
         ForeColor = Theme.Text;
         Font = new Font("Segoe UI", 9.5f);
-        ClientSize = new Size(1100, 790);
-        MinimumSize = new Size(980, 740);
+        ClientSize = new Size(1100, 760);
+        MinimumSize = new Size(980, 700);
         StartPosition = FormStartPosition.CenterScreen;
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch (Exception) { }
 
@@ -440,7 +501,8 @@ class MainForm : Form
         lblHdrVer = Lbl("", 9.5f, true, Theme.Muted);
         lblHdrVer.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         lblHdrVer.Location = new Point(960, 26);
-        header.Controls.AddRange(new Control[] { logo, title, sub, lblHdrVer });
+        title.Location = new Point(70, 24); // le sous-titre est dans la grande carte : l'en-tete reste epure
+        header.Controls.AddRange(new Control[] { logo, title, lblHdrVer });
         header.Resize += delegate { lblHdrVer.Left = header.Width - lblHdrVer.Width - 28; };
 
         // --- Corps : colonne de gauche (compte, memoire, options) | colonne de droite (jeu, journal) ---
@@ -454,18 +516,19 @@ class MainForm : Form
         right.Dock = DockStyle.Fill;
         right.BackColor = Theme.Bg;
 
-        Card hero = new Card();
-        hero.Dock = DockStyle.Top;
-        hero.Height = 262;
-        lblPack = Lbl("BMC6", 26f, true, Theme.Text);
-        lblPack.Location = new Point(26, 20);
+        HeroCard hero = new HeroCard();
+        hero.Dock = DockStyle.Fill;
+        lblPack = Lbl("BMC6", 46f, true, Theme.Text);
+        lblPack.Location = new Point(26, 22);
+        lblSub = Lbl("Better MC · NeoForge", 12f, false, Color.FromArgb(170, 178, 196));
+        lblSub.Location = new Point(32, 104);
         FlowLayoutPanel tags = new FlowLayoutPanel();
-        tags.Location = new Point(26, 76);
+        tags.Location = new Point(28, 144);
         tags.AutoSize = false;
         tags.Size = new Size(640, 32);
         tags.WrapContents = false;
         tags.FlowDirection = FlowDirection.LeftToRight;
-        tags.BackColor = Theme.Card;
+        tags.BackColor = Color.Transparent;
         lblMc = Pill("Minecraft");
         lblNf = Pill("NeoForge");
         lblVer = Pill("Pack");
@@ -475,34 +538,50 @@ class MainForm : Form
         lblSrv.Visible = false;
         tags.Controls.AddRange(new Control[] { lblMc, lblNf, lblVer, lblState, lblSrv });
         bar = new FlatBar();
-        bar.Location = new Point(26, 128);
         bar.Width = 400;
-        bar.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         bar.Visible = false;
-        lblProg = Lbl("", 9.5f, false, Theme.Muted);
-        lblProg.Location = new Point(26, 146);
+        lblProg = Lbl("", 9.5f, false, Color.FromArgb(190, 197, 212));
         lblProg.Visible = false;
-        lblErr = Lbl("", 9.5f, false, Theme.Red);
-        lblErr.Location = new Point(26, 126);
+        lblErr = Lbl("", 10.5f, false, Theme.Red);
+        lblErr.Location = new Point(30, 186);
         lblErr.MaximumSize = new Size(800, 0);
-        btnPlay = Btn("Jouer", Theme.Green, Color.FromArgb(4, 23, 12), 200, 62);
-        btnPlay.Font = new Font("Segoe UI Semibold", 16f);
-        btnPlay.Location = new Point(26, 180);
-        btnInstall = Btn("Installer", Theme.Accent, Color.White, 230, 62);
-        btnInstall.Font = new Font("Segoe UI Semibold", 12f);
-        btnInstall.Location = new Point(242, 180);
-        btnKill = Btn("Fermer le jeu", Theme.Red, Theme.Red, 150, 62);
+        lblHint = Lbl("", 12f, false, Color.FromArgb(190, 197, 212));
+        lblHint.Location = new Point(30, 190);
+        lblHint.MaximumSize = new Size(620, 0);
+        btnPlay = Btn("Jouer", Theme.Green, Color.FromArgb(4, 23, 12), 210, 66);
+        btnPlay.GradientTo = Color.FromArgb(38, 190, 160);
+        btnPlay.Font = new Font("Segoe UI Semibold", 17f);
+        btnInstall = Btn("Installer", Theme.Accent, Color.White, 230, 66);
+        btnInstall.GradientTo = Theme.Violet;
+        btnInstall.Font = new Font("Segoe UI Semibold", 12.5f);
+        btnKill = Btn("Fermer le jeu", Theme.Red, Theme.Red, 160, 66);
         btnKill.Outline = true;
-        btnKill.Location = new Point(488, 180);
         btnKill.Visible = false;
-        hero.Controls.AddRange(new Control[] { lblPack, tags, bar, lblProg, lblErr, btnPlay, btnInstall, btnKill });
-        btnPlay.BringToFront();
-        btnInstall.BringToFront();
-        btnKill.BringToFront();
-        hero.Resize += delegate { bar.Width = hero.Width - 52; tags.Width = hero.Width - 52; };
+        btnLogToggle = Btn("Journal ▾", Color.FromArgb(60, 255, 255, 255), Color.FromArgb(190, 197, 212), 116, 38);
+        btnLogToggle.Outline = true;
+        btnLogToggle.Font = new Font("Segoe UI Semibold", 9.5f);
+        hero.Controls.AddRange(new Control[] { lblPack, lblSub, tags, bar, lblProg, lblErr, lblHint, btnPlay, btnInstall, btnKill, btnLogToggle });
+        // boutons et progression restent colles au bas de la carte, le haut sert de "bandeau"
+        MethodInvoker layoutHero = delegate
+        {
+            int btnTop = hero.Height - 66 - 28;
+            btnPlay.Location = new Point(28, btnTop);
+            btnInstall.Location = new Point(28 + btnPlay.Width + 14, btnTop);
+            btnKill.Location = new Point(28 + btnPlay.Width + 14 + btnInstall.Width + 14, btnTop);
+            bar.Location = new Point(28, btnTop - 52);
+            bar.Width = Math.Max(100, hero.Width - 56);
+            lblProg.Location = new Point(28, btnTop - 34);
+            tags.Width = Math.Max(100, hero.Width - 56);
+            btnLogToggle.Location = new Point(hero.Width - 28 - btnLogToggle.Width, btnTop + 14);
+        };
+        hero.Resize += delegate { layoutHero(); };
+        layoutHero();
 
-        Card journal = new Card();
-        journal.Dock = DockStyle.Fill;
+        journalCard = new Card();
+        Card journal = journalCard;
+        journal.Dock = DockStyle.Bottom;
+        journal.Height = 250;
+        journal.Visible = false;
         Label hLog = Lbl("JOURNAL", 8.5f, true, Theme.Muted);
         hLog.Location = new Point(24, 20);
         btnClear = Btn("Effacer", Theme.Card2, Theme.Text, 78, 28);
@@ -521,8 +600,21 @@ class MainForm : Form
         logBox.ForeColor = Color.FromArgb(201, 206, 216);
         logBox.Font = new Font("Consolas", 9.5f);
         logBox.Location = new Point(24, 54);
+        // lecture seule : une frappe fait "bip" sous Windows, on l'ignore (sauf copier / tout selectionner / deplacement)
+        logBox.KeyPress += delegate (object s, KeyPressEventArgs e) { if (!char.IsControl(e.KeyChar)) e.Handled = true; };
+        logBox.KeyDown += delegate (object s, KeyEventArgs e)
+        {
+            bool nav = e.KeyCode == Keys.Left || e.KeyCode == Keys.Right || e.KeyCode == Keys.Up || e.KeyCode == Keys.Down ||
+                e.KeyCode == Keys.PageUp || e.KeyCode == Keys.PageDown || e.KeyCode == Keys.Home || e.KeyCode == Keys.End;
+            bool copy = e.Control && (e.KeyCode == Keys.C || e.KeyCode == Keys.A);
+            if (!nav && !copy) e.SuppressKeyPress = true;
+        };
         logBox.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-        journal.Controls.AddRange(new Control[] { hLog, btnClear, btnCopy, btnExport, logBox });
+        lblEmpty = Lbl("Le journal des opérations s'affichera ici.", 9.5f, false, Color.FromArgb(90, 98, 112));
+        lblEmpty.BackColor = logBox.BackColor;
+        lblEmpty.Location = new Point(38, 66);
+        journal.Controls.AddRange(new Control[] { hLog, btnClear, btnCopy, btnExport, logBox, lblEmpty });
+        lblEmpty.BringToFront();
         journal.Resize += delegate
         {
             logBox.Size = new Size(journal.Width - 48, journal.Height - 78);
@@ -531,9 +623,13 @@ class MainForm : Form
             btnExport.Location = new Point(btnCopy.Left - 8 - btnExport.Width, 14);
         };
 
-        right.Controls.Add(journal);
-        right.Controls.Add(Spacer(DockStyle.Top, 16));
+        // l'accueil prend toute la place ; le journal se deplie en bas a la demande
+        journalGap = Spacer(DockStyle.Bottom, 16);
+        journalGap.Visible = false;
         right.Controls.Add(hero);
+        right.Controls.Add(journalGap);
+        right.Controls.Add(journal);
+        btnLogToggle.Click += delegate { SetLog(!logShown); };
 
         // Colonne de gauche
         Panel left = new Panel();
@@ -567,7 +663,11 @@ class MainForm : Form
         linkUri.BackColor = Theme.Card;
         linkUri.Location = new Point(24, 184);
         linkUri.Visible = false;
-        linkUri.LinkClicked += delegate { if (linkUri.Tag != null) Process.Start((string)linkUri.Tag); };
+        linkUri.LinkClicked += delegate
+        {
+            if ((string)linkUri.Tag == "device") Act("/api/login", "mode=device"); // secours : connexion par code
+            else if (linkUri.Tag != null) Process.Start((string)linkUri.Tag);
+        };
         lblLoginErr = Lbl("", 9f, false, Theme.Red);
         lblLoginErr.Location = new Point(24, 118);
         lblLoginErr.MaximumSize = new Size(300, 0);
@@ -654,7 +754,7 @@ class MainForm : Form
         btnLogout.Click += delegate { Act("/api/logout", ""); };
         btnFolder.Click += delegate { OpenFolder(); };
         btnCopy.Click += delegate { if (logBox.TextLength > 0) { try { Clipboard.SetText(logBox.Text); } catch (Exception) { } } };
-        btnClear.Click += delegate { logBox.Clear(); };
+        btnClear.Click += delegate { logBox.Clear(); lblEmpty.Visible = true; };
 
         // icone dans la zone de notification : sert quand la fenetre est masquee pendant une partie
         tray.Icon = Icon;
@@ -698,6 +798,15 @@ class MainForm : Form
         {
             MessageBox.Show("Impossible de créer le fichier de logs : " + e.Message, "BMC6 Launcher", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    void SetLog(bool show)
+    {
+        logShown = show;
+        journalCard.Visible = show;
+        journalGap.Visible = show;
+        btnLogToggle.Text = show ? "Journal ▴" : "Journal ▾";
+        if (show) { logBox.SelectionStart = logBox.TextLength; logBox.ScrollToCaret(); }
     }
 
     static string Duration(double seconds)
@@ -848,6 +957,17 @@ class MainForm : Form
         string err = S(s, "error");
         lblErr.Text = err;
         lblErr.Visible = err.Length > 0 && !installing;
+        // une phrase qui dit ou on en est (et pourquoi "Jouer" est grise)
+        lblHint.Text = phase == "playing" ? "Le jeu est lancé. Bonne partie !"
+            : !installed ? "Clique sur Installer : le premier téléchargement prend quelques minutes."
+            : update ? "Une mise à jour du pack est disponible."
+            : account.Length == 0 ? "Connecte-toi avec ton compte Microsoft pour pouvoir jouer."
+            : "Tout est prêt. Bon jeu !";
+        lblHint.Visible = !installing && !lblErr.Visible;
+        // le journal s'ouvre tout seul au debut d'une installation et quand une erreur apparait, sinon il reste replie
+        if (installing && !logAutoOpened) { logAutoOpened = true; SetLog(true); }
+        if (!installing) logAutoOpened = false;
+        if (err != lastErr) { lastErr = err; if (err.Length > 0 && !logShown) SetLog(true); }
 
         // compte
         bool waiting = login != null && S(login, "status") == "waiting";
@@ -859,30 +979,46 @@ class MainForm : Form
         avatar.Letter = signedIn ? account.Substring(0, 1).ToUpper() : "?";
         avatar.Tint = signedIn ? TintFor(account) : Theme.Line;
         avatar.Invalidate();
+        bool byBrowser = waiting && S(login, "mode") == "browser";
         lblCodeHelp.Visible = waiting;
-        lblCode.Visible = waiting;
+        lblCode.Visible = waiting && !byBrowser;
         linkUri.Visible = waiting;
-        if (waiting)
+        if (byBrowser)
+        {
+            // la page Microsoft est deja ouverte : rien a recopier ; le lien sert de secours si elle ne marche pas
+            lblCodeHelp.Text = "Une page Microsoft s'est ouverte dans ton navigateur : choisis ton compte, puis reviens ici.";
+            lblCodeHelp.MaximumSize = new Size(316, 0);
+            linkUri.Text = "Un problème ? Utiliser un code à la place";
+            linkUri.Tag = "device";
+            linkUri.Top = 168;
+        }
+        else if (waiting)
         {
             string code = S(login, "code"), uri = S(login, "uri");
+            lblCodeHelp.Text = "Ouvre le lien et entre ce code :";
             lblCode.Text = code;
             linkUri.Text = uri;
             linkUri.Tag = uri;
+            linkUri.Top = 184;
             if (code != shownCode)
             {
                 shownCode = code;
                 try { Process.Start(uri); } catch (Exception) { }
             }
         }
-        else shownCode = "";
+        if (!waiting) shownCode = "";
         string loginErr = login != null && S(login, "status") == "error" ? S(login, "msg") : "";
         lblLoginErr.Text = loginErr;
         lblLoginErr.Visible = loginErr.Length > 0;
         btnLogin.Visible = !signedIn && !waiting;
         btnLogin.Enabled = msOk;
-        btnLogin.Top = loginErr.Length > 0 ? 176 + lblLoginErr.Height - 10 : 170;
-        btnLogin.Parent.Height = Math.Max(232, btnLogin.Top + btnLogin.Height + 22); // un long message d'erreur agrandit la carte au lieu de couper le bouton
+        btnLogin.Top = loginErr.Length > 0 ? 118 + lblLoginErr.Height + 10 : 124;
+        btnLogout.Top = 124;
         btnLogout.Visible = signedIn;
+        // la carte s'ajuste a son contenu : courte au repos, plus haute pour le code de connexion ou un long message d'erreur
+        Control accBtn = signedIn ? (Control)btnLogout : btnLogin;
+        accBtn.Parent.Height = waiting ? 232 : accBtn.Top + accBtn.Height + 24;
+        lblEmpty.Visible = logBox.TextLength == 0;
 
         // reglages
         string srv = S(pack, "server");
@@ -913,6 +1049,7 @@ class MainForm : Form
         {
             string path = screenshotPath;
             screenshotPath = null;
+            if (Environment.GetEnvironmentVariable("BMC6_SHOT_LOG") == "1") SetLog(true); // verification visuelle du journal deplie
             System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
             t.Interval = 1200;
             t.Tick += delegate

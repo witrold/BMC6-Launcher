@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const { writeZip } = require('./zip');
 const core = require('./core');
 const auth = require('./auth');
@@ -148,12 +148,33 @@ function desktopDir() {
 /** Connexion Microsoft en cours (code a saisir) : { status: waiting|done|error, code, uri, name, msg }. */
 let login = null;
 
-async function startLogin() {
+let browserLogin = null; // connexion par le navigateur en cours (serveur de retour local)
+
+/** mode : "device" = code a saisir sur microsoft.com/link ; sinon, connexion par le navigateur (sans rien saisir). */
+async function startLogin(mode) {
   if (!pack.msClientId) return 'Connexion Microsoft non configuree (msClientId absent de pack.json).';
-  if (login && login.status === 'waiting') return null;
+  if (login && login.status === 'waiting' && mode !== 'device') return null;
+  if (browserLogin) {
+    const old = browserLogin;
+    browserLogin = null;
+    old.cancel();
+  }
   try {
+    if (mode !== 'device') {
+      const bl = await auth.startBrowserLogin(pack.msClientId);
+      browserLogin = bl;
+      login = { status: 'waiting', mode: 'browser' };
+      spawn('rundll32', ['url.dll,FileProtocolHandler', bl.url], { stdio: 'ignore', detached: true }).unref();
+      bl.result.then(async ms => {
+        const acc = await auth.completeLogin(ms);
+        if (browserLogin === bl) login = { status: 'done', name: acc.profile.name };
+      }).catch(e => {
+        if (browserLogin === bl) login = { status: 'error', msg: e.message };
+      }).finally(() => { if (browserLogin === bl) browserLogin = null; });
+      return null;
+    }
     const dev = await auth.startDeviceLogin(pack.msClientId);
-    login = { status: 'waiting', code: dev.user_code, uri: dev.verification_uri };
+    login = { status: 'waiting', mode: 'device', code: dev.user_code, uri: dev.verification_uri };
     (async () => {
       try {
         const ms = await auth.pollDeviceLogin(pack.msClientId, dev);
@@ -259,7 +280,7 @@ const server = http.createServer(async (req, res) => {
       case '/api/repair': return send(200, 'application/json', result(await install(true)));
       case '/api/export-logs': return json({ ok: true, path: exportLogs() });
       case '/api/play': return send(200, 'application/json', result(await play()));
-      case '/api/login': return send(200, 'application/json', result(await startLogin()));
+      case '/api/login': return send(200, 'application/json', result(await startLogin(new URLSearchParams(body).get('mode'))));
       case '/api/logout': auth.logout(); login = null; return send(200, 'application/json', result(null));
       case '/api/kill': if (game) game.kill(); return send(200, 'application/json', result(null));
       case '/api/config': return send(200, 'application/json', result(saveConfig(body)));

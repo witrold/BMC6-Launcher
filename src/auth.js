@@ -1,8 +1,10 @@
 'use strict';
-// Connexion Microsoft -> Xbox Live -> XSTS -> Minecraft Services (flux "device code").
+// Connexion Microsoft -> Xbox Live -> XSTS -> Minecraft Services (par le navigateur, ou par code en secours).
 // Necessite un identifiant d'application Azure approuve par Mojang (pack.json : msClientId).
 const fs = require('fs');
+const http = require('http');
 const path = require('path');
+const crypto = require('crypto');
 const core = require('./core');
 
 const FILE = path.join(core.DATA, 'account.json');
@@ -59,6 +61,77 @@ async function pollDeviceLogin(clientId, dev) {
     throw new Error(r.data.error_description || r.data.error || `token : HTTP ${r.status}`);
   }
   throw new Error('Code expire : recommence la connexion.');
+}
+
+/**
+ * Connexion par le navigateur (code d'autorisation + PKCE) : la page Microsoft s'ouvre, puis renvoie vers un petit serveur
+ * local temporaire. Necessite l'adresse de redirection http://localhost dans l'application Azure ("Application mobile et de bureau").
+ * Renvoie { url, result, cancel } : result donne les jetons Microsoft.
+ */
+async function startBrowserLogin(clientId) {
+  const verifier = crypto.randomBytes(32).toString('base64url');
+  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+  const state = crypto.randomBytes(16).toString('hex');
+  let finish, fail;
+  const result = new Promise((res, rej) => { finish = res; fail = rej; });
+  result.catch(() => { /* l'appelant gere l'erreur ; ceci evite un plantage si une annulation arrive avant */ });
+  const servers = [];
+  let timer = null;
+  const close = () => {
+    clearTimeout(timer);
+    for (const s of servers) {
+      try {
+        s.close();
+        if (s.closeAllConnections) s.closeAllConnections();
+      } catch { /* deja ferme */ }
+    }
+  };
+  const page = (ok, msg) => `<!doctype html><meta charset="utf-8"><title>BMC6 Launcher</title>` +
+    `<body style="font-family:Segoe UI,sans-serif;background:#0a0c10;color:#e8eaee;display:grid;place-items:center;height:100vh;margin:0">` +
+    `<div style="text-align:center"><h1>${ok ? 'Connexion réussie' : 'Connexion impossible'}</h1><p>${msg}</p></div>`;
+  let redirect = '';
+  const handler = async (req, res) => {
+    const u = new URL(req.url, 'http://localhost');
+    const reply = (code, ok, msg) => {
+      res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8', Connection: 'close' });
+      res.end(page(ok, msg));
+    };
+    if (u.pathname !== '/' || u.searchParams.get('state') !== state) return reply(400, false, 'Réponse inattendue.');
+    if (u.searchParams.get('error')) {
+      reply(200, false, 'Retourne dans le launcher pour voir le détail.');
+      close();
+      return fail(new Error(u.searchParams.get('error_description') || u.searchParams.get('error')));
+    }
+    const code = u.searchParams.get('code');
+    if (!code) return reply(400, false, 'Réponse inattendue.');
+    const r = await post(`${MS}/token`, {
+      grant_type: 'authorization_code', client_id: clientId, code, redirect_uri: redirect, code_verifier: verifier, scope: SCOPE,
+    }, true);
+    if (!r.ok) {
+      reply(200, false, 'Retourne dans le launcher pour voir le détail.');
+      close();
+      return fail(new Error(r.data.error_description || r.data.error || `token : HTTP ${r.status}`));
+    }
+    reply(200, true, 'Tu peux fermer cet onglet et retourner dans le launcher.');
+    close();
+    finish(r.data);
+  };
+  // "localhost" peut pointer vers IPv4 ou IPv6 selon le navigateur : on ecoute sur les deux, uniquement en local
+  const s4 = http.createServer(handler);
+  await new Promise((res, rej) => { s4.once('error', rej); s4.listen(0, '127.0.0.1', res); });
+  servers.push(s4);
+  const port = s4.address().port;
+  const s6 = http.createServer(handler);
+  await new Promise(res => { s6.once('error', res); s6.listen(port, '::1', res); }); // IPv6 absent : tant pis
+  if (s6.listening) servers.push(s6);
+  redirect = `http://localhost:${port}`;
+  timer = setTimeout(() => { close(); fail(new Error('Connexion non terminée : recommence.')); }, 5 * 60 * 1000);
+  timer.unref();
+  const url = `${MS}/authorize?` + new URLSearchParams({
+    client_id: clientId, response_type: 'code', redirect_uri: redirect, response_mode: 'query', scope: SCOPE,
+    state, code_challenge: challenge, code_challenge_method: 'S256', prompt: 'select_account',
+  }).toString();
+  return { url, result, cancel: () => { close(); fail(new Error('annulé')); } };
 }
 
 async function refreshMicrosoft(clientId, refreshToken) {
@@ -135,4 +208,4 @@ async function getPlayer(clientId) {
   return { name: acc.profile.name, uuid: acc.profile.id, token: acc.mcToken, type: 'msa', xuid: '' };
 }
 
-module.exports = { startDeviceLogin, pollDeviceLogin, completeLogin, getPlayer, loadAccount, logout };
+module.exports = { startBrowserLogin, startDeviceLogin, pollDeviceLogin, completeLogin, getPlayer, loadAccount, logout };
