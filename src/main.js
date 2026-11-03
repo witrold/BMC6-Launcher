@@ -173,6 +173,7 @@ function state(since) {
     task: bus.task, done: bus.done, total: bus.total,
     config: loadConfig(),
     msConfigured: !!pack.msClientId,
+    paths: { instance: instanceDir() },
     account: (() => { const a = auth.loadAccount(); return a ? a.profile.name : ''; })(),
     login,
     pack: { name: pack.name, minecraft: p.minecraft, neoforge: p.neoforge, server: p.server || '', version: manifest ? String(manifest.version || '') : '', installedVersion },

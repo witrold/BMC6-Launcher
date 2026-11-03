@@ -18,13 +18,16 @@ const flag = name => {
   return i >= 0 ? process.argv[i + 1] : null;
 };
 const has = name => process.argv.includes('--' + name);
-const instance = process.argv[2] && !process.argv[2].startsWith('--') ? process.argv[2] : null;
 const pack = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'pack.json'), 'utf8'));
+try { // pack.local.json (ignore par git) : "instance" = dossier de l'instance a publier sur ce PC
+  Object.assign(pack, JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'pack.local.json'), 'utf8')));
+} catch { /* absent : normal */ }
+const instance = process.argv[2] && !process.argv[2].startsWith('--') ? process.argv[2] : pack.instance || null;
 const repo = flag('github') || (pack.github && pack.github.repo);
 const tag = flag('tag') || (pack.github && pack.github.tag) || 'pack';
 const dry = has('dry-run');
 if (!instance || !repo) {
-  console.error('Usage : node tools/publish.js <dossier-instance> [--github owner/repo] [--tag pack] [--version X] [--server ip:port] [--overwrite-config] [--dry-run]');
+  console.error('(dossier-instance facultatif si "instance" est defini dans pack.local.json)\nUsage : node tools/publish.js <dossier-instance> [--github owner/repo] [--tag pack] [--version X] [--server ip:port] [--overwrite-config] [--dry-run]');
   process.exit(1);
 }
 
@@ -84,6 +87,8 @@ const rel = p => path.relative(instance, p).split(path.sep).join('/');
     for (const p of walk(path.join(instance, dir))) {
       const r = rel(p);
       if (/\.(bak|disabled|old)$/i.test(r) || /^shaderpacks\/Outdated/i.test(r)) continue;
+      // fichiers personnels ou generes par le jeu : caches, historique JEI (le nom du dossier contient l'IP du serveur)
+      if (/^config\/(.*\/)?cache\//i.test(r) || /^config\/jei\/world\//i.test(r) || /^fancymenu_data\//i.test(r)) continue;
       const name = path.basename(p);
       if (dir === 'resourcepacks' && restricted.has(name)) {
         const buf = fs.readFileSync(p);
@@ -109,7 +114,7 @@ const rel = p => path.relative(instance, p).split(path.sep).join('/');
     version: flag('version') || new Date().toISOString().slice(0, 16).replace(/[-:T]/g, ''),
     minecraft: mc,
     neoforge: nf,
-    ...(flag('server') ? { server: flag('server') } : {}),
+    ...(flag('server') || pack.server ? { server: flag('server') || pack.server } : {}), // pack.server vient de pack.local.json (tools/set-server.js)
     managedDirs: ['mods'],
     files,
     overrides: { github: zipName, sha1: zipSha, size: zipBuf.length, overwrite: has('overwrite-config') },
@@ -163,6 +168,13 @@ const rel = p => path.relative(instance, p).split(path.sep).join('/');
     console.log(`  envoyes : ${Math.min(i + 20, staged.length)} / ${staged.length}`);
   }
   gh('release', 'upload', tag, '--repo', repo, '--clobber', manifestPath);
+  // menage : supprime de la release les fichiers que le nouveau pack n'utilise plus (anciens mods, anciens zips de configs)
+  const keep = new Set([...uploads.keys(), 'pack-manifest.json']);
+  const now = JSON.parse(gh('release', 'view', tag, '--repo', repo, '--json', 'assets')).assets.map(a => a.name);
+  for (const name of now.filter(n => !keep.has(n))) {
+    gh('release', 'delete-asset', tag, name, '--repo', repo, '--yes');
+    console.log(`Supprime de la release (plus dans le pack) : ${name}`);
+  }
   console.log(`Publie : https://github.com/${repo}/releases/tag/${tag}`);
   fs.rmSync(stage, { recursive: true, force: true });
 })().catch(e => {
