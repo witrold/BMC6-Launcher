@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BMC6 Launcher</title>
+<link rel="icon" type="image/png" href="/icon.png">
 <style>
   :root {
     --bg: #0a0c10; --surface: #11141a; --surface2: #171b23; --line: #232933; --line2: #2e3541;
@@ -135,7 +136,7 @@ async function poll() {
   $("tVer").style.display = s.pack.version ? "" : "none"; $("tVer").textContent = "Pack " + s.pack.version;
   const busy = s.phase !== "idle";
   $("bPlay").disabled = busy || !s.installed; $("bInstall").disabled = busy;
-  $("bInstall").textContent = !s.installed ? "Installer" : s.updateAvailable ? "Mettre à jour" : "Réparer";
+  $("bInstall").textContent = !s.installed ? "Installer" : s.updateAvailable ? "Mettre à jour" : "Vérifier les fichiers";
   $("bKill").style.display = s.phase === "playing" ? "" : "none";
   $("prog").classList.toggle("on", s.phase === "installing");
   if (s.phase === "installing") {

@@ -9,6 +9,7 @@ const { spawn } = require('child_process');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const { fileURLToPath } = require('url');
+const { extractZip } = require('./zip');
 
 const DATA = process.env.BMC6_DATA || path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'BMC6Launcher');
 const MC = path.join(DATA, 'minecraft'); // versions/, libraries/, assets/ (comme .minecraft)
@@ -64,7 +65,7 @@ function localPath(url) {
 }
 
 /** Telecharge url vers dest (ignore si le fichier est deja valide). Renvoie true si telecharge. */
-async function download(url, dest, { sha1, size } = {}) {
+async function download(url, dest, { sha1, size, headers } = {}) {
   if (await valid(dest, sha1, size)) return false;
   await fsp.mkdir(path.dirname(dest), { recursive: true });
   const local = localPath(url);
@@ -76,8 +77,8 @@ async function download(url, dest, { sha1, size } = {}) {
   }
   for (let attempt = 1; ; attempt++) {
     try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status} pour ${url}`);
+      const res = await fetch(url, headers ? { headers } : undefined);
+      if (!res.ok) throw new Error(`HTTP ${res.status} pour ${url.replace(/\?.*$/, '')}`);
       const tmp = dest + '.part';
       await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(tmp));
       if (sha1 && (await sha1File(tmp)) !== sha1) throw new Error(`sha1 incorrect pour ${url}`);
@@ -275,14 +276,17 @@ async function listFiles(dir) {
  * ne remplace pas les fichiers `overwrite: false` deja presents, et supprime des dossiers geres
  * (par defaut mods/) les fichiers qui ne sont plus dans le pack.
  */
-async function syncPack(manifest, manifestUrl, dir) {
+async function syncPack(manifest, manifestUrl, dir, gh) {
   const files = manifest.files || [];
-  task(`Pack ${manifest.name || ''} : fichiers`, files.length);
+  task(`Pack ${manifest.name || ''} : fichiers`, files.length + (manifest.overrides ? 1 : 0));
   await pool(files, 8, async f => {
     const dest = safeJoin(dir, f.path);
     if (f.overwrite === false && fs.existsSync(dest)) return;
-    await download(resolveUrl(f.url, manifestUrl), dest, { sha1: f.sha1, size: f.size });
+    const src = f.github ? ghSource(gh, f.github) : { url: resolveUrl(f.url, manifestUrl) };
+    await download(src.url, dest, { sha1: f.sha1, size: f.size, headers: src.headers });
   });
+  if (manifest.overrides) await syncOverrides(manifest.overrides, manifestUrl, dir, gh);
+  bus.done = bus.total;
   const keep = new Set(files.map(f => safeJoin(dir, f.path)));
   let removed = 0;
   for (const d of manifest.managedDirs || ['mods']) {
@@ -297,6 +301,66 @@ async function syncPack(manifest, manifestUrl, dir) {
   await fsp.mkdir(dir, { recursive: true });
   await fsp.writeFile(path.join(dir, '.pack-version'), String(manifest.version || ''));
   return { files: files.length, removed };
+}
+
+// ---------- GitHub (depot prive du pack) ----------
+
+function ghHeaders(token, accept) {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: accept || 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+    'User-Agent': 'bmc6-launcher',
+  };
+}
+
+async function ghJson(url, token) {
+  const res = await fetch(url, { headers: ghHeaders(token) });
+  if (res.status === 401 || res.status === 403) throw new Error('Acces refuse au pack : le jeton est invalide ou expire.');
+  if (res.status === 404) throw new Error('Pack introuvable (depot, version ou jeton incorrect).');
+  if (!res.ok) throw new Error(`GitHub : HTTP ${res.status}`);
+  return res.json();
+}
+
+/** Lit la release du depot et renvoie { manifest, ctx } ; ctx sert ensuite a telecharger les fichiers. */
+async function loadGithubManifest(repo, tag, token) {
+  if (!token) throw new Error('Jeton d\'acces au pack manquant (packToken).');
+  const rel = await ghJson(`https://api.github.com/repos/${repo}/releases/tags/${tag}`, token);
+  const assets = new Map();
+  for (let page = 1; ; page++) {
+    const list = await ghJson(`https://api.github.com/repos/${repo}/releases/${rel.id}/assets?per_page=100&page=${page}`, token);
+    for (const a of list) assets.set(a.name, a);
+    if (list.length < 100) break;
+  }
+  const ctx = { repo, token, assets };
+  const m = assets.get('pack-manifest.json');
+  if (!m) throw new Error('La release ne contient pas pack-manifest.json.');
+  const tmp = path.join(CACHE, 'pack-manifest.json');
+  const src = ghSource(ctx, 'pack-manifest.json');
+  fs.rmSync(tmp, { force: true });
+  await download(src.url, tmp, { headers: src.headers });
+  return { manifest: JSON.parse(fs.readFileSync(tmp, 'utf8')), ctx };
+}
+
+function ghSource(ctx, name) {
+  const a = ctx && ctx.assets.get(name);
+  if (!a) throw new Error(`Fichier absent de la release du pack : ${name}`);
+  return { url: `https://api.github.com/repos/${ctx.repo}/releases/assets/${a.id}`, headers: ghHeaders(ctx.token, 'application/octet-stream') };
+}
+
+/** Archive "overrides" : configs, shaders... decompressee dans l'instance (sans ecraser, sauf si le pack le demande). */
+async function syncOverrides(ov, manifestUrl, dir, gh) {
+  const state = path.join(dir, '.overrides-sha1');
+  const current = fs.existsSync(state) ? fs.readFileSync(state, 'utf8').trim() : '';
+  if (current === ov.sha1) return;
+  const zipPath = path.join(CACHE, `overrides-${ov.sha1}.zip`);
+  const src = ov.github ? ghSource(gh, ov.github) : { url: resolveUrl(ov.url, manifestUrl) };
+  task('Pack : configurations et ressources');
+  await download(src.url, zipPath, { sha1: ov.sha1, size: ov.size, headers: src.headers });
+  const n = extractZip(zipPath, dir, { overwrite: current !== '' && ov.overwrite === true });
+  log(`Configurations : ${n} fichier(s) ecrits.`);
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.writeFile(state, ov.sha1);
 }
 
 function installedPackVersion(dir) {
@@ -433,4 +497,4 @@ function isInstalled(versionId, mcVersion) {
   }
 }
 
-module.exports = { DATA, MC, INSTANCES, CACHE, bus, log, task, download, getJson, pool, installMinecraft, installNeoForge, ensureJava, buildLaunch, launch, isInstalled, sha1File, syncPack, installedPackVersion, resolveUrl };
+module.exports = { DATA, MC, INSTANCES, CACHE, bus, log, task, download, getJson, pool, installMinecraft, installNeoForge, ensureJava, buildLaunch, launch, isInstalled, sha1File, syncPack, installedPackVersion, resolveUrl, loadGithubManifest };

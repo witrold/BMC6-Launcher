@@ -10,10 +10,15 @@ const auth = require('./auth');
 
 const ROOT = path.join(__dirname, '..');
 const PORT = Number(process.env.PORT || 8780);
-const TOKEN = crypto.randomUUID();
+const TOKEN = process.env.BMC6_TOKEN || crypto.randomUUID(); // l'application native fournit son propre jeton
 const pack = JSON.parse(fs.readFileSync(path.join(ROOT, 'pack.json'), 'utf8'));
+// pack.local.json (ignore par git) : reglages et secrets propres a ce PC, par exemple le jeton du depot prive
+try {
+  Object.assign(pack, JSON.parse(fs.readFileSync(path.join(ROOT, 'pack.local.json'), 'utf8')));
+} catch { /* absent : normal */ }
 if (process.env.PACK_MANIFEST) pack.manifestUrl = process.env.PACK_MANIFEST;
 if (process.env.MS_CLIENT_ID) pack.msClientId = process.env.MS_CLIENT_ID;
+if (process.env.BMC6_PACK_TOKEN) pack.packToken = process.env.BMC6_PACK_TOKEN; // essais : le jeton normal est dans pack.json du zip des amis
 const CONFIG = path.join(core.DATA, 'config.json');
 
 let phase = 'idle'; // idle | installing | playing
@@ -27,10 +32,19 @@ const eff = () => ({ ...pack, ...(manifest || {}) });
 const versionId = () => `neoforge-${eff().neoforge}`;
 const instanceDir = () => path.join(core.INSTANCES, pack.name);
 
+let ghCtx = null; // acces a la release GitHub du pack (depot prive)
+const hasRemotePack = () => !!(pack.github || pack.manifestUrl);
+
 async function refreshManifest() {
-  if (!pack.manifestUrl) return;
+  if (!hasRemotePack()) return;
   try {
-    manifest = await core.getJson(pack.manifestUrl);
+    if (pack.github) {
+      const r = await core.loadGithubManifest(pack.github.repo, pack.github.tag || 'pack', pack.packToken);
+      manifest = r.manifest;
+      ghCtx = r.ctx;
+    } else {
+      manifest = await core.getJson(pack.manifestUrl);
+    }
     manifestError = '';
   } catch (e) {
     manifestError = `Impossible de lire le pack en ligne : ${e.message}`;
@@ -65,12 +79,12 @@ async function install() {
   (async () => {
     try {
       await refreshManifest();
-      if (pack.manifestUrl && !manifest) throw new Error(manifestError);
+      if (hasRemotePack() && !manifest) throw new Error(manifestError);
       const p = eff();
       await core.installMinecraft(p.minecraft);
       await core.installNeoForge(p.neoforge);
       if (manifest) {
-        const r = await core.syncPack(manifest, pack.manifestUrl, instanceDir());
+        const r = await core.syncPack(manifest, pack.manifestUrl, instanceDir(), ghCtx);
         core.log(`Pack synchronise : ${r.files} fichiers, ${r.removed} supprime(s).`);
       }
       core.task('Installation terminee');
@@ -180,6 +194,12 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/') {
       const html = fs.readFileSync(path.join(ROOT, 'ui', 'index.html'), 'utf8').replace('__TOKEN__', TOKEN);
       return send(200, 'text/html; charset=utf-8', html);
+    }
+    // sans jeton : etat minimal (utilise par BMC6 Launcher.exe pour savoir quand arreter le serveur) et icone
+    if (url.pathname === '/health') return send(200, 'application/json', JSON.stringify({ phase }));
+    if (url.pathname === '/icon.png') {
+      res.writeHead(200, { 'Content-Type': 'image/png' });
+      return res.end(fs.readFileSync(path.join(ROOT, 'ui', 'icon.png')));
     }
     if (req.headers['x-token'] !== TOKEN) return send(403, 'text/plain', 'forbidden');
     let body = '';

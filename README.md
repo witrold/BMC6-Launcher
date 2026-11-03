@@ -21,28 +21,37 @@ _Not an official Minecraft product. Not approved by or associated with Mojang or
 Requires Node.js 22 or newer.
 
 ```
-node src/main.js
+node tools/build-exe.js   # builds "BMC6 Launcher.exe" with the C# compiler that ships with Windows
 ```
 
-Then open http://127.0.0.1:8780. Game files go to `%APPDATA%\BMC6Launcher`.
+Double-click `BMC6 Launcher.exe`: a native Windows application (WinForms, `app/Launcher.cs`). It starts the engine (`src/`, Node.js) hidden in the background and talks to it over a local-only HTTP API protected by a per-run token. Closing the window stops the engine; if a game is running, the window hides to the notification area and the launcher exits when the game closes.
+
+Without the exe (development): `node src/main.js`, then open http://127.0.0.1:8780 for a browser version of the same interface. Game files go to `%APPDATA%\BMC6Launcher`.
 
 Set `msClientId` in `pack.json` to your own Azure application (client) ID. It must be a public client, and Mojang must have approved it for Minecraft Services.
 
 ## Publish a new pack version
 
+The pack (mods, configs) lives in a **private** GitHub repository (`pack.json` → `github`). Requires the GitHub CLI (`gh`), signed in.
+
 ```
-node tools/publish.js <instance-folder> <output-folder> <base-url> --version <version> --server <host:port>
+node tools/publish.js <instance-folder> [--version <v>] [--server <host:port>] [--overwrite-config] [--dry-run]
 ```
 
-This writes `pack-manifest.json` and the files under `files/<sha1>` to upload to any static host. Put the manifest address in `pack.json` (`manifestUrl`). Configs are not overwritten on players' machines unless `--overwrite-config` is used; mods always are.
+- Each mod is uploaded once to the repository's release (named by its sha1); configs, shaders and resource packs go in a single zip.
+- Files whose authors forbid third-party redistribution (CurseForge `allowModDistribution=false`) are **never uploaded**: the manifest points to the identical file (same sha1) on Modrinth.
+- Configs are not overwritten on players' machines unless `--overwrite-config` is used; mods always are.
 
 ## Portable build for friends
 
+Friends need a read-only token for the private pack repository (fine-grained token, `Contents: read` on that repository only). It goes only in the zip, never in this repository.
+
 ```
-node tools/package.js --manifest-url <url> --client-id <id> --server <host:port>
+node tools/check-token.js <token>                                   # checks the token can read the pack
+node tools/package.js --pack-token <token> [--server <host:port>]   # creates dist/BMC6Launcher.zip
 ```
 
-Creates `dist/BMC6Launcher.zip` with a portable Node.js, so nothing has to be installed.
+The zip contains a portable Node.js and `BMC6 Launcher.exe`, so nothing has to be installed.
 
 ## Français (résumé)
 
