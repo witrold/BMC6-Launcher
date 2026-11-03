@@ -301,18 +301,22 @@ class MainForm : Form
     readonly System.Windows.Forms.Timer saveTimer = new System.Windows.Forms.Timer();
     readonly NotifyIcon tray = new NotifyIcon();
 
-    Label lblPack, lblMc, lblNf, lblState, lblVer, lblProg, lblErr, lblAccount, lblAccSub, lblCodeHelp, lblCode, lblJoinHint, lblJoin, lblLoginErr;
+    Label lblSrv, lblPack, lblMc, lblNf, lblState, lblVer, lblProg, lblErr, lblAccount, lblAccSub, lblCodeHelp, lblCode, lblJoinHint, lblJoin, lblLoginErr;
     Label lblRamValue, lblRamSub, lblRamNote, lblHdrVer;
     AvatarBox avatar;
     FlatBar bar;
-    RoundButton btnPlay, btnInstall, btnKill, btnLogin, btnLogout, btnFolder, btnCopy, btnClear;
+    RoundButton btnPlay, btnInstall, btnKill, btnLogin, btnLogout, btnFolder, btnCopy, btnClear, btnAutoRam, btnExport;
     LinkLabel linkUri;
     RamSlider ramSlider;
     Toggle tglJoin;
     RichTextBox logBox;
 
-    int next, totalRamMb = 16384;
-    bool polling, formLoaded, exiting, hiddenForGame;
+    int next, totalRamMb = 16384, recommendedMb = 8192;
+    // vitesse de telechargement et temps restant pendant l'installation
+    double lastBytes, speed, taskStartDone;
+    DateTime lastSample, taskStart;
+    string progTask = "";
+    bool polling, formLoaded, exiting, hiddenForGame, repairMode;
     string phase = "idle", shownCode = "", instancePath = "";
     string screenshotPath;
 
@@ -467,7 +471,9 @@ class MainForm : Form
         lblVer = Pill("Pack");
         lblVer.Visible = false;
         lblState = Pill("Non installé");
-        tags.Controls.AddRange(new Control[] { lblMc, lblNf, lblVer, lblState });
+        lblSrv = Pill("Serveur");
+        lblSrv.Visible = false;
+        tags.Controls.AddRange(new Control[] { lblMc, lblNf, lblVer, lblState, lblSrv });
         bar = new FlatBar();
         bar.Location = new Point(26, 128);
         bar.Width = 400;
@@ -479,21 +485,21 @@ class MainForm : Form
         lblErr = Lbl("", 9.5f, false, Theme.Red);
         lblErr.Location = new Point(26, 126);
         lblErr.MaximumSize = new Size(800, 0);
-        btnPlay = Btn("Jouer", Theme.Green, Color.FromArgb(4, 23, 12), 250, 62);
+        btnPlay = Btn("Jouer", Theme.Green, Color.FromArgb(4, 23, 12), 200, 62);
         btnPlay.Font = new Font("Segoe UI Semibold", 16f);
         btnPlay.Location = new Point(26, 180);
-        btnInstall = Btn("Installer", Theme.Accent, Color.White, 260, 62);
+        btnInstall = Btn("Installer", Theme.Accent, Color.White, 230, 62);
         btnInstall.Font = new Font("Segoe UI Semibold", 12f);
-        btnInstall.Location = new Point(292, 180);
-        btnKill = Btn("Fermer le jeu", Theme.Red, Theme.Red, 160, 62);
+        btnInstall.Location = new Point(242, 180);
+        btnKill = Btn("Fermer le jeu", Theme.Red, Theme.Red, 150, 62);
         btnKill.Outline = true;
-        btnKill.Location = new Point(568, 180);
+        btnKill.Location = new Point(488, 180);
         btnKill.Visible = false;
         hero.Controls.AddRange(new Control[] { lblPack, tags, bar, lblProg, lblErr, btnPlay, btnInstall, btnKill });
         btnPlay.BringToFront();
         btnInstall.BringToFront();
         btnKill.BringToFront();
-        hero.Resize += delegate { bar.Width = hero.Width - 52; };
+        hero.Resize += delegate { bar.Width = hero.Width - 52; tags.Width = hero.Width - 52; };
 
         Card journal = new Card();
         journal.Dock = DockStyle.Fill;
@@ -505,6 +511,9 @@ class MainForm : Form
         btnCopy = Btn("Copier", Theme.Card2, Theme.Text, 78, 28);
         btnCopy.Font = new Font("Segoe UI Semibold", 9f);
         btnCopy.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        btnExport = Btn("Exporter les logs", Theme.Card2, Theme.Text, 130, 28);
+        btnExport.Font = new Font("Segoe UI Semibold", 9f);
+        btnExport.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         logBox = new RichTextBox();
         logBox.ReadOnly = true;
         logBox.BorderStyle = BorderStyle.None;
@@ -513,12 +522,13 @@ class MainForm : Form
         logBox.Font = new Font("Consolas", 9.5f);
         logBox.Location = new Point(24, 54);
         logBox.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-        journal.Controls.AddRange(new Control[] { hLog, btnClear, btnCopy, logBox });
+        journal.Controls.AddRange(new Control[] { hLog, btnClear, btnCopy, btnExport, logBox });
         journal.Resize += delegate
         {
             logBox.Size = new Size(journal.Width - 48, journal.Height - 78);
             btnClear.Location = new Point(journal.Width - 24 - btnClear.Width, 14);
             btnCopy.Location = new Point(btnClear.Left - 8 - btnCopy.Width, 14);
+            btnExport.Location = new Point(btnCopy.Left - 8 - btnExport.Width, 14);
         };
 
         right.Controls.Add(journal);
@@ -586,7 +596,10 @@ class MainForm : Form
         lblRamNote = Lbl("", 9f, false, Theme.Muted);
         lblRamNote.Location = new Point(25, 184);
         lblRamNote.MaximumSize = new Size(316, 0);
-        ram.Controls.AddRange(new Control[] { hRam, lblRamValue, lblRamSub, ramSlider, lblRamNote });
+        btnAutoRam = Btn("Auto", Theme.Card2, Theme.Text, 70, 28);
+        btnAutoRam.Font = new Font("Segoe UI Semibold", 9f);
+        btnAutoRam.Location = new Point(270, 16);
+        ram.Controls.AddRange(new Control[] { hRam, lblRamValue, lblRamSub, ramSlider, lblRamNote, btnAutoRam });
         int usable = Math.Max(4096, ((totalRamMb - 4096) / 512) * 512);
         ramSlider.MaxMb = Math.Min(32768, usable);
         ramSlider.Value = 8192;
@@ -626,9 +639,17 @@ class MainForm : Form
         Controls.Add(body);
         Controls.Add(header);
 
-        btnInstall.Click += delegate { Act("/api/install", ""); };
+        btnInstall.Click += delegate { Act(repairMode ? "/api/repair" : "/api/install", ""); };
         btnPlay.Click += delegate { Act("/api/play", ""); };
         btnKill.Click += delegate { Act("/api/kill", ""); };
+        btnAutoRam.Click += delegate
+        {
+            ramSlider.Value = Math.Min(recommendedMb, ramSlider.MaxMb);
+            UpdateRamLabels(); // le curseur ne signale que les changements faits a la souris
+            saveTimer.Stop();
+            saveTimer.Start();
+        };
+        btnExport.Click += delegate { ExportLogs(); };
         btnLogin.Click += delegate { Act("/api/login", ""); };
         btnLogout.Click += delegate { Act("/api/logout", ""); };
         btnFolder.Click += delegate { OpenFolder(); };
@@ -653,14 +674,59 @@ class MainForm : Form
         double share = (double)ramSlider.Value / totalRamMb;
         if (share > 0.8) { lblRamValue.ForeColor = Theme.Red; lblRamNote.Text = "Trop élevé : Windows et le reste manqueront de mémoire."; }
         else if (share > 0.6) { lblRamValue.ForeColor = Theme.Amber; lblRamNote.Text = "Élevé : ferme les autres programmes pour jouer."; }
-        else if (go < 4) { lblRamValue.ForeColor = Theme.Amber; lblRamNote.Text = "Peu de mémoire : ce pack est lourd, 6 à 10 Go sont conseillés."; }
-        else { lblRamValue.ForeColor = Theme.Text; lblRamNote.Text = "Conseillé pour ce pack : 6 à 10 Go."; }
+        else if (go < 6) { lblRamValue.ForeColor = Theme.Amber; lblRamNote.Text = "Peu de mémoire : ce pack est lourd, 8 à 12 Go sont conseillés."; }
+        else { lblRamValue.ForeColor = Theme.Text; lblRamNote.Text = "Conseillé pour ce pack : 8 à 12 Go."; }
     }
 
     void OpenFolder()
     {
         if (instancePath.Length > 0 && Directory.Exists(instancePath)) Process.Start("explorer.exe", "\"" + instancePath + "\"");
         else MessageBox.Show("Le dossier n'existe pas encore : installe d'abord le jeu.", "BMC6 Launcher", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    /// <summary>Cree BMC6-logs.zip sur le Bureau (journal du launcher, dernier log du jeu, dernier crash) et l'affiche dans l'Explorateur.</summary>
+    async void ExportLogs()
+    {
+        try
+        {
+            Dictionary<string, object> r = await Api("/api/export-logs", "");
+            string path = S(r, "path");
+            if (path.Length > 0 && File.Exists(path)) Process.Start("explorer.exe", "/select,\"" + path + "\"");
+            else MessageBox.Show("Impossible de créer le fichier de logs : " + S(r, "msg"), "BMC6 Launcher", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        catch (Exception e)
+        {
+            MessageBox.Show("Impossible de créer le fichier de logs : " + e.Message, "BMC6 Launcher", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    static string Duration(double seconds)
+    {
+        if (seconds < 90) return Math.Max(5, Math.Round(seconds / 5) * 5) + " s";
+        return Math.Round(seconds / 60) + " min";
+    }
+
+    /// <summary>Texte de progression : tache, avancement, vitesse de telechargement et temps restant estime.</summary>
+    string ProgressText(Dictionary<string, object> s)
+    {
+        string task = S(s, "task");
+        double total = N(s, "total"), done = N(s, "done"), bytes = N(s, "bytes");
+        DateTime now = DateTime.UtcNow;
+        if (task != progTask) { progTask = task; taskStart = now; taskStartDone = done; }
+        if (bytes < lastBytes || lastSample == DateTime.MinValue) { lastBytes = bytes; lastSample = now; speed = 0; }
+        double dt = (now - lastSample).TotalSeconds;
+        if (dt >= 0.7)
+        {
+            double inst = (bytes - lastBytes) / dt;
+            speed = speed <= 0 ? inst : speed * 0.7 + inst * 0.3;
+            lastBytes = bytes;
+            lastSample = now;
+        }
+        string text = task + (total > 0 ? "   " + done + " / " + total : "");
+        if (speed > 50 * 1024) text += "  ·  " + (speed / 1048576).ToString("0.0") + " Mo/s";
+        double elapsed = (now - taskStart).TotalSeconds, steps = done - taskStartDone;
+        if (total > 0 && steps >= 3 && elapsed >= 4 && done < total) text += "  ·  ~" + Duration((total - done) * elapsed / steps) + " restantes";
+        return text;
     }
 
     void ShowFromTray()
@@ -747,7 +813,7 @@ class MainForm : Form
         lblPack.Text = S(pack, "name");
         lblMc.Text = "Minecraft " + S(pack, "minecraft");
         lblNf.Text = "NeoForge " + S(pack, "neoforge");
-        lblVer.Visible = S(pack, "version").Length > 0;
+        lblVer.Visible = false; // la version du pack est deja dans l'en-tete : la rangee de pastilles manquerait de place
         lblVer.Text = "Pack " + S(pack, "version");
         lblHdrVer.Text = S(pack, "version").Length > 0 ? "Pack " + S(pack, "version") : "";
         lblHdrVer.Left = lblHdrVer.Parent.Width - lblHdrVer.Width - 28;
@@ -756,7 +822,8 @@ class MainForm : Form
 
         btnPlay.Enabled = !busy && installed && account.Length > 0;
         btnInstall.Enabled = !busy;
-        btnInstall.Text = !installed ? "Installer" : update ? "Mettre à jour" : "Vérifier les fichiers";
+        repairMode = installed && !update; // a jour : le bouton fait la verification complete (mods, Java, configs)
+        btnInstall.Text = !installed ? "Installer" : update ? "Mettre à jour" : "Réparer";
         btnKill.Visible = phase == "playing";
 
         bool installing = phase == "installing";
@@ -766,7 +833,17 @@ class MainForm : Form
         {
             double total = N(s, "total"), done = N(s, "done");
             bar.Value = total > 0 ? done / total : 0.03;
-            lblProg.Text = S(s, "task") + (total > 0 ? "   " + done + " / " + total : "");
+            lblProg.Text = ProgressText(s);
+        }
+        else { progTask = ""; lastSample = DateTime.MinValue; }
+        recommendedMb = (int)N(s, "recommendedRamMb") > 0 ? (int)N(s, "recommendedRamMb") : recommendedMb;
+        Dictionary<string, object> ss = D(s, "serverStatus");
+        lblSrv.Visible = S(pack, "server").Length > 0 && ss != null;
+        if (ss != null)
+        {
+            bool on = B(ss, "online");
+            lblSrv.Text = on ? "Serveur en ligne · " + N(ss, "players") + "/" + N(ss, "max") : "Serveur hors ligne";
+            lblSrv.ForeColor = on ? Theme.Green : Theme.Muted;
         }
         string err = S(s, "error");
         lblErr.Text = err;
@@ -804,6 +881,7 @@ class MainForm : Form
         btnLogin.Visible = !signedIn && !waiting;
         btnLogin.Enabled = msOk;
         btnLogin.Top = loginErr.Length > 0 ? 176 + lblLoginErr.Height - 10 : 170;
+        btnLogin.Parent.Height = Math.Max(232, btnLogin.Top + btnLogin.Height + 22); // un long message d'erreur agrandit la carte au lieu de couper le bouton
         btnLogout.Visible = signedIn;
 
         // reglages
@@ -824,7 +902,7 @@ class MainForm : Form
         object lines;
         if (s.TryGetValue("lines", out lines) && lines is IEnumerable && !(lines is string))
         {
-            foreach (object o in (IEnumerable)lines) AppendLog(o == null ? "" : o.ToString());
+            AppendLogs((IEnumerable)lines);
             next = (int)N(s, "next");
         }
 
@@ -852,21 +930,64 @@ class MainForm : Form
         }
     }
 
-    void AppendLog(string line)
+    [DllImport("user32.dll")]
+    static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    static Color LogColor(string line)
     {
-        Color c = Color.FromArgb(201, 206, 216);
-        if (line.StartsWith("> ")) c = Theme.Accent;
-        else if (line.StartsWith("ERREUR") || line.Contains("ERROR:")) c = Theme.Red;
-        else if (line.Contains("WARN:")) c = Theme.Amber;
-        else if (line.StartsWith("[jeu]")) c = Theme.Muted;
+        if (line.StartsWith("> ")) return Theme.Accent;
+        if (line.StartsWith("ERREUR") || line.Contains("ERROR:")) return Theme.Red;
+        if (line.Contains("WARN:")) return Theme.Amber;
+        if (line.StartsWith("[jeu]")) return Theme.Muted;
+        return Color.FromArgb(201, 206, 216);
+    }
+
+    void FlushLog(StringBuilder sb, Color c)
+    {
         logBox.SelectionStart = logBox.TextLength;
+        logBox.SelectionLength = 0;
         logBox.SelectionColor = c;
-        logBox.AppendText(line + "\n");
-        if (logBox.Lines.Length > 2500)
+        logBox.AppendText(sb.ToString());
+        sb.Length = 0;
+    }
+
+    /// <summary>
+    /// Ajoute un lot de lignes d'un coup (une seule mise a jour de l'ecran). La zone est deverrouillee le temps de l'ajout :
+    /// Windows fait un "bip" a chaque changement de couleur dans une zone en lecture seule.
+    /// </summary>
+    void AppendLogs(IEnumerable lines)
+    {
+        List<string> list = new List<string>();
+        foreach (object o in lines) list.Add(o == null ? "" : o.ToString());
+        if (list.Count == 0) return;
+        int from = Math.Max(0, list.Count - 2500);
+        SendMessage(logBox.Handle, 0x000B, IntPtr.Zero, IntPtr.Zero); // WM_SETREDRAW off
+        logBox.ReadOnly = false;
+        try
         {
-            logBox.SelectionStart = 0;
-            logBox.SelectionLength = logBox.GetFirstCharIndexFromLine(500);
-            logBox.SelectedText = "";
+            StringBuilder sb = new StringBuilder();
+            Color run = Color.Empty;
+            for (int i = from; i < list.Count; i++)
+            {
+                Color c = LogColor(list[i]);
+                if (sb.Length > 0 && c != run) FlushLog(sb, run);
+                run = c;
+                sb.Append(list[i]).Append('\n');
+            }
+            if (sb.Length > 0) FlushLog(sb, run);
+            if (logBox.TextLength > 600000)
+            {
+                int cut = logBox.Text.IndexOf('\n', 250000);
+                logBox.Select(0, cut < 0 ? 250000 : cut + 1);
+                logBox.SelectedText = "";
+            }
+        }
+        finally
+        {
+            logBox.ReadOnly = true;
+            logBox.BackColor = Color.FromArgb(7, 9, 12);
+            SendMessage(logBox.Handle, 0x000B, new IntPtr(1), IntPtr.Zero);
+            logBox.Invalidate();
         }
         logBox.SelectionStart = logBox.TextLength;
         logBox.ScrollToCaret();

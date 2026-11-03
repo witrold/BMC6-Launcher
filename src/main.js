@@ -4,7 +4,9 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 const { exec } = require('child_process');
+const { writeZip } = require('./zip');
 const core = require('./core');
 const auth = require('./auth');
 
@@ -52,7 +54,7 @@ async function refreshManifest() {
 }
 
 function loadConfig() {
-  const def = { ramMb: 8192, autoJoin: false };
+  const def = { ramMb: core.recommendedRamMb(), autoJoin: false }; // premiere utilisation : adapte a la memoire du PC
   try {
     return { ...def, ...JSON.parse(fs.readFileSync(CONFIG, 'utf8')) };
   } catch {
@@ -72,12 +74,19 @@ function saveConfig(body) {
   return null;
 }
 
-async function install() {
+/** repair : recontrole aussi Java et les configurations du pack (les fichiers de config absents sont remis, ceux du joueur ne sont pas ecrases). */
+async function install(repair = false) {
   if (phase !== 'idle') return 'Une operation est deja en cours.';
   phase = 'installing';
   error = '';
+  core.bus.bytes = 0;
   (async () => {
     try {
+      if (repair) {
+        core.log('> Reparation : verification de tous les fichiers');
+        for (const c of fs.existsSync(core.RUNTIME) ? fs.readdirSync(core.RUNTIME) : []) fs.rmSync(path.join(core.RUNTIME, c, '.ok'), { force: true });
+        fs.rmSync(path.join(instanceDir(), '.overrides-sha1'), { force: true });
+      }
       await refreshManifest();
       if (hasRemotePack() && !manifest) throw new Error(manifestError);
       const p = eff();
@@ -85,7 +94,7 @@ async function install() {
       await core.installNeoForge(p.neoforge);
       if (manifest) {
         const r = await core.syncPack(manifest, pack.manifestUrl, instanceDir(), ghCtx);
-        core.log(`Pack synchronise : ${r.files} fichiers, ${r.removed} supprime(s).`);
+        core.log(`Pack synchronise : ${r.files} fichiers, ${r.fetched} telecharge(s), ${r.removed} supprime(s).`);
       }
       core.task('Installation terminee');
     } catch (e) {
@@ -96,6 +105,44 @@ async function install() {
     }
   })();
   return null;
+}
+
+let serverStatus = null; // { online, players, max } ou null tant qu'on n'a pas interroge le serveur
+
+async function refreshServerStatus() {
+  const addr = eff().server;
+  serverStatus = addr ? await core.pingServer(addr) : null;
+}
+
+/** Zip sur le Bureau avec ce qu'il faut pour comprendre un probleme : journal du launcher, dernier log du jeu, dernier rapport de crash. */
+function exportLogs() {
+  const dir = instanceDir();
+  const entries = [];
+  const tmp = path.join(core.CACHE, 'launcher-log.txt');
+  fs.mkdirSync(core.CACHE, { recursive: true });
+  const head = [`Pack ${pack.name} ${eff().minecraft} NeoForge ${eff().neoforge}`, `Pack installe : ${core.installedPackVersion(dir) || '-'}`,
+    `${os.type()} ${os.release()}, ${Math.round(os.totalmem() / 1073741824)} Go de RAM, RAM du jeu : ${loadConfig().ramMb} Mo`, ''];
+  fs.writeFileSync(tmp, [...head, ...core.bus.logs].join('\n'));
+  entries.push({ name: 'launcher-log.txt', file: tmp });
+  const latest = path.join(dir, 'logs', 'latest.log');
+  if (fs.existsSync(latest)) entries.push({ name: 'latest.log', file: latest });
+  const crashDir = path.join(dir, 'crash-reports');
+  if (fs.existsSync(crashDir)) {
+    const newest = fs.readdirSync(crashDir).map(n => ({ n, t: fs.statSync(path.join(crashDir, n)).mtimeMs })).sort((a, b) => b.t - a.t)[0];
+    if (newest) entries.push({ name: newest.n, file: path.join(crashDir, newest.n) });
+  }
+  const out = path.join(desktopDir(), 'BMC6-logs.zip');
+  writeZip(entries, out);
+  return out;
+}
+
+/** Le Bureau n'est pas toujours dans le dossier de l'utilisateur (OneDrive le deplace) : on demande a Windows. */
+function desktopDir() {
+  try {
+    const d = require('child_process').execFileSync('powershell.exe', ['-NoProfile', '-Command', '[Environment]::GetFolderPath(\'Desktop\')'], { encoding: 'utf8', timeout: 8000 }).trim();
+    if (d && fs.existsSync(d)) return d;
+  } catch { /* on prend le dossier de donnees */ }
+  return core.DATA;
 }
 
 /** Connexion Microsoft en cours (code a saisir) : { status: waiting|done|error, code, uri, name, msg }. */
@@ -170,8 +217,8 @@ function state(since) {
     phase, error: error || manifestError,
     installed: isReady(),
     updateAvailable: !!manifest && installedVersion !== String(manifest.version || ''),
-    task: bus.task, done: bus.done, total: bus.total,
-    config: loadConfig(),
+    task: bus.task, done: bus.done, total: bus.total, bytes: bus.bytes,
+    config: loadConfig(), recommendedRamMb: core.recommendedRamMb(), serverStatus,
     msConfigured: !!pack.msClientId,
     paths: { instance: instanceDir() },
     account: (() => { const a = auth.loadAccount(); return a ? a.profile.name : ''; })(),
@@ -209,6 +256,8 @@ const server = http.createServer(async (req, res) => {
     switch (url.pathname) {
       case '/api/state': return json(state(Number(url.searchParams.get('since')) || 0));
       case '/api/install': return send(200, 'application/json', result(await install()));
+      case '/api/repair': return send(200, 'application/json', result(await install(true)));
+      case '/api/export-logs': return json({ ok: true, path: exportLogs() });
       case '/api/play': return send(200, 'application/json', result(await play()));
       case '/api/login': return send(200, 'application/json', result(await startLogin()));
       case '/api/logout': auth.logout(); login = null; return send(200, 'application/json', result(null));
@@ -229,7 +278,8 @@ server.listen(PORT, '127.0.0.1', () => {
   const url = `http://127.0.0.1:${PORT}`;
   console.log(`BMC6 Launcher : ${url}  (Ctrl+C pour quitter)`);
   console.log(`Donnees : ${core.DATA}`);
-  refreshManifest();
+  refreshManifest().then(refreshServerStatus);
   setInterval(refreshManifest, 10 * 60 * 1000).unref();
+  setInterval(refreshServerStatus, 30 * 1000).unref();
   if (!process.env.NO_BROWSER) exec(`start "" "${url}"`);
 });

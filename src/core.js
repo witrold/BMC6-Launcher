@@ -21,7 +21,7 @@ const VERSION_MANIFEST = 'https://piston-meta.mojang.com/mc/game/version_manifes
 const JAVA_RUNTIMES = 'https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json';
 
 /** Etat partage avec l'interface : tache en cours, progression, journal. */
-const bus = { task: '', done: 0, total: 0, logs: [], base: 0 };
+const bus = { task: '', done: 0, total: 0, bytes: 0, logs: [], base: 0 };
 function log(msg) {
   bus.logs.push(msg);
   if (bus.logs.length > 2000) {
@@ -71,6 +71,7 @@ async function download(url, dest, { sha1, size, headers } = {}) {
   const local = localPath(url);
   if (local) {
     await fsp.copyFile(local, dest + '.part');
+    bus.bytes += (await fsp.stat(dest + '.part')).size;
     if (sha1 && (await sha1File(dest + '.part')) !== sha1) throw new Error(`sha1 incorrect pour ${url}`);
     await fsp.rename(dest + '.part', dest);
     return true;
@@ -80,7 +81,9 @@ async function download(url, dest, { sha1, size, headers } = {}) {
       const res = await fetch(url, headers ? { headers } : undefined);
       if (!res.ok) throw new Error(`HTTP ${res.status} pour ${url.replace(/\?.*$/, '')}`);
       const tmp = dest + '.part';
-      await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(tmp));
+      const body = Readable.fromWeb(res.body);
+      body.on('data', d => { bus.bytes += d.length; }); // sert a afficher la vitesse de telechargement
+      await pipeline(body, fs.createWriteStream(tmp));
       if (sha1 && (await sha1File(tmp)) !== sha1) throw new Error(`sha1 incorrect pour ${url}`);
       await fsp.rename(tmp, dest);
       return true;
@@ -279,11 +282,15 @@ async function listFiles(dir) {
 async function syncPack(manifest, manifestUrl, dir, gh) {
   const files = manifest.files || [];
   task(`Pack ${manifest.name || ''} : fichiers`, files.length + (manifest.overrides ? 1 : 0));
+  let fetched = 0;
   await pool(files, 8, async f => {
     const dest = safeJoin(dir, f.path);
     if (f.overwrite === false && fs.existsSync(dest)) return;
     const src = f.github ? ghSource(gh, f.github) : { url: resolveUrl(f.url, manifestUrl) };
-    await download(src.url, dest, { sha1: f.sha1, size: f.size, headers: src.headers });
+    if (await download(src.url, dest, { sha1: f.sha1, size: f.size, headers: src.headers })) {
+      fetched++;
+      log(`Telecharge : ${f.path}`);
+    }
   });
   if (manifest.overrides) await syncOverrides(manifest.overrides, manifestUrl, dir, gh);
   bus.done = bus.total;
@@ -300,7 +307,7 @@ async function syncPack(manifest, manifestUrl, dir, gh) {
   }
   await fsp.mkdir(dir, { recursive: true });
   await fsp.writeFile(path.join(dir, '.pack-version'), String(manifest.version || ''));
-  return { files: files.length, removed };
+  return { files: files.length, removed, fetched };
 }
 
 // ---------- GitHub (depot prive du pack) ----------
@@ -497,4 +504,76 @@ function isInstalled(versionId, mcVersion) {
   }
 }
 
-module.exports = { DATA, MC, INSTANCES, CACHE, bus, log, task, download, getJson, pool, installMinecraft, installNeoForge, ensureJava, buildLaunch, launch, isInstalled, sha1File, syncPack, installedPackVersion, resolveUrl, loadGithubManifest };
+// ---------- Memoire conseillee, statut du serveur ----------
+
+/** RAM conseillee pour le jeu (Mo) : 8 a 12 Go sur un PC qui les a (14 Go de RAM ou plus), sinon environ 60 % de ce qui reste apres 4 Go pour Windows. */
+function recommendedRamMb() {
+  const totalMb = Math.floor(os.totalmem() / 1048576);
+  const share = Math.floor(((totalMb - 4096) * 0.6) / 512) * 512;
+  return Math.min(12288, Math.max(totalMb >= 14336 ? 8192 : 4096, share));
+}
+
+const varint = n => {
+  const out = [];
+  do {
+    let b = n & 0x7f;
+    n >>>= 7;
+    if (n) b |= 0x80;
+    out.push(b);
+  } while (n);
+  return Buffer.from(out);
+};
+
+/** Interroge un serveur Minecraft (protocole "server list ping") : { online, players, max } ; online=false si injoignable. */
+function pingServer(address, timeoutMs = 4000) {
+  const net = require('net');
+  const m = /^(.*?)(?::(\d+))?$/.exec(address);
+  const host = m[1], port = Number(m[2] || 25565);
+  return new Promise(resolve => {
+    const sock = net.connect({ host, port });
+    let buf = Buffer.alloc(0), settled = false;
+    const done = v => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      resolve(v);
+    };
+    sock.setTimeout(timeoutMs, () => done({ online: false }));
+    sock.on('error', () => done({ online: false }));
+    sock.on('connect', () => {
+      const h = Buffer.from(host);
+      const port2 = Buffer.alloc(2);
+      port2.writeUInt16BE(port);
+      const hs = Buffer.concat([varint(0), varint(767), varint(h.length), h, port2, varint(1)]);
+      sock.write(Buffer.concat([varint(hs.length), hs, varint(1), varint(0)]));
+    });
+    sock.on('data', d => {
+      buf = Buffer.concat([buf, d]);
+      // reponse : longueur, id (0), longueur du texte, JSON
+      try {
+        let i = 0;
+        const read = () => {
+          let v = 0, shift = 0, b;
+          do {
+            if (i >= buf.length) throw new RangeError('incomplet');
+            b = buf[i++];
+            v |= (b & 0x7f) << shift;
+            shift += 7;
+          } while (b & 0x80);
+          return v;
+        };
+        const len = read();
+        if (buf.length - i < len) return;
+        read(); // id du paquet
+        const n = read();
+        if (buf.length - i < n) return;
+        const j = JSON.parse(buf.subarray(i, i + n).toString('utf8'));
+        done({ online: true, players: j.players?.online ?? 0, max: j.players?.max ?? 0 });
+      } catch (e) {
+        if (!(e instanceof RangeError)) done({ online: false });
+      }
+    });
+  });
+}
+
+module.exports = { RUNTIME, recommendedRamMb, pingServer, DATA, MC, INSTANCES, CACHE, bus, log, task, download, getJson, pool, installMinecraft, installNeoForge, ensureJava, buildLaunch, launch, isInstalled, sha1File, syncPack, installedPackVersion, resolveUrl, loadGithubManifest };
